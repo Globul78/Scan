@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Mekohm Scan" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>Mekohm Scan — Factures PDF</title>
+
+  <!-- Icône Web App iOS générée en SVG inline -->
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%230f172a'/%3E%3Crect x='36' y='28' width='108' height='124' rx='12' fill='%231e293b' stroke='%2338bdf8' stroke-width='6'/%3E%3Cpath d='M56 64h68M56 90h68M56 116h44' stroke='%23f8fafc' stroke-width='8' stroke-linecap='round'/%3E%3Ccircle cx='134' cy='134' r='26' fill='%230284c7'/%3E%3Cpath d='M124 134l7 7 14-14' stroke='%23ffffff' stroke-width='6' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E" />
+
+  <!-- Librairies jsPDF et OpenCV.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script async src="https://docs.opencv.org/4.9.0/opencv.js" onload="onOpenCvReady();"></script>
+
+  <style>
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --surface-light: #334155;
+      --primary: #0ea5e9;
+      --primary-dark: #0284c7;
+      --accent: #10b981;
+      --danger: #ef4444;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --safe-top: env(safe-area-inset-top, 20px);
+      --safe-bottom: env(safe-area-inset-bottom, 20px);
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* En-tête */
+    header {
+      padding: calc(var(--safe-top) + 8px) 16px 10px;
+      background: var(--surface);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      z-index: 10;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      font-size: 17px;
+      letter-spacing: -0.3px;
+    }
+
+    .brand span {
+      color: var(--primary);
+    }
+
+    .cv-badge {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(245, 158, 11, 0.2);
+      color: #fbbf24;
+      font-weight: 600;
+    }
+
+    .cv-badge.ready {
+      background: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+    }
+
+    /* Conteneur principal des vues */
+    main {
+      flex: 1;
+      position: relative;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .view {
+      display: none;
+      flex: 1;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    .view.active {
+      display: flex;
+    }
+
+    /* VUE 1 : Accueil & Liste des pages */
+    .home-container {
+      padding: 16px;
+      display: flex
