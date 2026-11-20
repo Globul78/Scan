@@ -92,7 +92,7 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     input[type="file"] { display: none; }
 
-    /* --- VISIONNEUSE PLEIN ÉCRAN (ZOOM) --- */
+    /* --- FULLSCREEN PREVIEW VIEWER (ZOOM) --- */
     .preview-modal {
       position: fixed;
       inset: 0;
@@ -239,11 +239,11 @@
       <div id="previewTitle" class="preview-title">Invoice #1</div>
       <div style="display:flex; gap:8px;">
         <button class="preview-close" onclick="togglePreviewZoom()">🔍 Zoom</button>
-        <button class="preview-close" onclick="closePreviewModal()">✕ Fermer</button>
+        <button class="preview-close" onclick="closePreviewModal()">✕ Close</button>
       </div>
     </div>
     <div class="preview-body" onclick="if(event.target === this) closePreviewModal()">
-      <img id="previewImage" src="" alt="Aperçu facture" onclick="togglePreviewZoom()" />
+      <img id="previewImage" src="" alt="Invoice preview" onclick="togglePreviewZoom()" />
     </div>
   </div>
 
@@ -257,7 +257,7 @@
 
     let cvReady = false;
     let scannedPages = [];
-    let undoStack = []; // Jusqu'à 5 états précédents par semaine
+    let undoStack = []; // Up to 5 previous states
     const MAX_UNDO = 5;
     let originalImage = null;
     let corners = [];
@@ -272,6 +272,21 @@
       const el = document.getElementById('loaderOverlay');
       document.getElementById('loaderText').textContent = text;
       el.classList.toggle('active', visible);
+    }
+
+    // --- ADAPTIVE IMAGE COMPRESSION (TARGET MAX ~400 KB) ---
+    function encodeCanvasUnderMaxKB(canvas, maxKB = 400, initialQuality = 0.88) {
+      let quality = initialQuality;
+      let dataUrl = canvas.toDataURL('image/jpeg', quality);
+      const maxBytes = maxKB * 1024;
+
+      while (quality > 0.45) {
+        const approxBytes = Math.round((dataUrl.length - 23) * 0.75);
+        if (approxBytes <= maxBytes) break;
+        quality = Number((quality - 0.06).toFixed(2));
+        dataUrl = canvas.toDataURL('image/jpeg', quality);
+      }
+      return dataUrl;
     }
 
     // --- UNDO HISTORY (UP TO 5 STEPS) ---
@@ -323,22 +338,22 @@
     }
 
     // --- TIMESTAMPED COPY BACKUP (FORMAT: yymmdd-hhmm) ---
-    async function sauvegarderCopieHorodatee(donnee, extensionForcee = null) {
+    async function saveTimestampedCopy(data, forcedExtension = null) {
       const now = new Date();
       const pad = (n) => String(n).padStart(2, '0');
       const yy = String(now.getFullYear()).slice(-2);
-      const horodatage = `${yy}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
-      
-      let blob = donnee;
-      if (typeof donnee === 'string') {
-        const res = await fetch(donnee);
+      const timestampName = `${yy}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+
+      let blob = data;
+      if (typeof data === 'string') {
+        const res = await fetch(data);
         blob = await res.blob();
       }
 
-      const estPdf = extensionForcee === 'pdf' || blob.type === 'application/pdf';
-      const ext = estPdf ? 'pdf' : 'jpg';
-      const mimeType = estPdf ? 'application/pdf' : 'image/jpeg';
-      const fileName = `${horodatage}.${ext}`;
+      const isPdf = forcedExtension === 'pdf' || blob.type === 'application/pdf';
+      const ext = isPdf ? 'pdf' : 'jpg';
+      const mimeType = isPdf ? 'application/pdf' : 'image/jpeg';
+      const fileName = `${timestampName}.${ext}`;
 
       const file = new File([blob], fileName, { type: mimeType });
 
@@ -349,12 +364,12 @@
           });
           return;
         } catch (err) {
-          console.log('Partage annulé');
+          console.log('Share canceled');
           return;
         }
       }
 
-      // Fallback sur PC : téléchargement direct
+      // Desktop fallback: direct download
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -531,7 +546,7 @@
       }
     }
 
-    // Compact PDF import (1.35x scale, 0.72 JPEG quality)
+    // High-resolution PDF import (max 400 KB/page, multi-page grouped side-by-side)
     async function importExternalPDF(file) {
       if (!window.pdfjsLib) {
         alert('PDF reader is still loading, please try again in 2 seconds.');
@@ -551,11 +566,12 @@
                         now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 
         const activeKey = getActiveWeekKey();
+        const docGroupId = `pdf_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
         for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
           setLoader(true, `Importing page ${pageNum} / ${totalPages}...`);
           const page = await pdfDoc.getPage(pageNum);
-          const viewport = page.getViewport({ scale: 1.35 });
+          const viewport = page.getViewport({ scale: 1.75 });
 
           const canvas = document.createElement('canvas');
           canvas.width = Math.round(viewport.width);
@@ -567,13 +583,18 @@
 
           await page.render({ canvasContext: ctx, viewport: viewport }).promise;
 
+          const pageLabel = totalPages > 1 ? `PDF (${pageNum}/${totalPages}) • ${dateStr}` : `PDF • ${dateStr}`;
+
           const newScan = {
             weekKey: activeKey,
-            dataUrl: canvas.toDataURL('image/jpeg', 0.72),
+            dataUrl: encodeCanvasUnderMaxKB(canvas, 400, 0.88),
             width: canvas.width,
             height: canvas.height,
-            timestamp: `PDF • ${dateStr}`,
+            timestamp: pageLabel,
             isFullPage: true,
+            docGroupId: totalPages > 1 ? docGroupId : null,
+            docPageIndex: pageNum,
+            docTotalPages: totalPages,
             order: scannedPages.length
           };
 
@@ -584,7 +605,7 @@
 
         renderPagesGrid();
         setLoader(false);
-        await sauvegarderCopieHorodatee(file, 'pdf');
+        await saveTimestampedCopy(file, 'pdf');
       } catch (err) {
         console.error(err);
         alert('Unable to read this PDF file (it may be password-protected).');
@@ -598,7 +619,7 @@
       reader.onload = function(e) {
         const img = new Image();
         img.onload = function() {
-          const maxDim = 1300;
+          const maxDim = 1600;
           let w = img.width, h = img.height;
           if (w > maxDim || h > maxDim) {
             if (w > h) { h = Math.round((h * maxDim) / w); w = maxDim; }
@@ -614,7 +635,7 @@
             showView('viewCrop');
             drawCropCanvas();
           };
-          originalImage.src = tempCanvas.toDataURL('image/jpeg', 0.85);
+          originalImage.src = tempCanvas.toDataURL('image/jpeg', 0.92);
         };
         img.src = e.target.result;
       };
@@ -897,7 +918,7 @@
 
       pushUndoSnapshot();
 
-      const imageDataUrl = resCanvas.toDataURL('image/jpeg', 0.68);
+      const imageDataUrl = encodeCanvasUnderMaxKB(resCanvas, 400, 0.88);
 
       const newScan = {
         weekKey: getActiveWeekKey(),
@@ -915,8 +936,8 @@
       renderPagesGrid();
       showView('viewHome');
 
-      // Sauvegarde automatique horodatée via le menu Partager iOS (sans fichier .txt)
-      await sauvegarderCopieHorodatee(imageDataUrl, 'jpg');
+      // Automatic timestamped backup via iOS Share Sheet
+      await saveTimestampedCopy(imageDataUrl, 'jpg');
     }
 
     async function movePage(index, direction) {
@@ -935,7 +956,7 @@
       if (!item) return;
 
       const labelInfo = item.timestamp ? ` (${item.timestamp})` : '';
-      if (!confirm(`Êtes-vous certain de vouloir effacer la facture #${index + 1}${labelInfo} ?`)) {
+      if (!confirm(`Are you sure you want to delete invoice #${index + 1}${labelInfo}?`)) {
         return;
       }
 
@@ -994,7 +1015,7 @@
       `).join('');
     }
 
-    // --- VISIONNEUSE PLEIN ÉCRAN ---
+    // --- FULLSCREEN PREVIEW VIEWER ---
     function openPreviewModal(index) {
       const item = scannedPages[index];
       if (!item) return;
@@ -1039,11 +1060,24 @@
       let cursorY = margin;
       let currentRowMaxH = 0;
 
+      // Count contiguous pages belonging to the same multi-page invoice
+      const groupSizes = {};
+      scannedPages.forEach((item) => {
+        if (item.docGroupId) {
+          groupSizes[item.docGroupId] = (groupSizes[item.docGroupId] || 0) + 1;
+        }
+      });
+
       scannedPages.forEach((item, index) => {
         const aspect = item.width / Math.max(1, item.height);
+        const multiPageCount = item.docGroupId ? groupSizes[item.docGroupId] : 1;
 
         let targetW;
-        if (!item.isFullPage && aspect < 0.58) {
+        if (multiPageCount >= 2) {
+          // Place all pages of a multi-page invoice side-by-side on the same row
+          const cols = Math.min(multiPageCount, 4);
+          targetW = (usableW - colGap * (cols - 1)) / cols;
+        } else if (!item.isFullPage && aspect < 0.58) {
           targetW = (usableW - colGap * 3) / 4;
         } else if (!item.isFullPage && aspect < 0.85) {
           targetW = (usableW - colGap * 2) / 3;
@@ -1080,9 +1114,12 @@
         pdf.setFont('helvetica', 'bold');
         pdf.setFontSize(8);
         pdf.setTextColor(100, 116, 139);
-        pdf.text(`#${index + 1}`, cursorX, cursorY + 8);
+        const pageTag = multiPageCount >= 2 && item.docPageIndex
+          ? `#${index + 1} (p.${item.docPageIndex}/${multiPageCount})`
+          : `#${index + 1}`;
+        pdf.text(pageTag, cursorX, cursorY + 8);
 
-        pdf.addImage(item.dataUrl, 'JPEG', cursorX, cursorY + labelH, drawW, drawH, undefined, 'MEDIUM');
+        pdf.addImage(item.dataUrl, 'JPEG', cursorX, cursorY + labelH, drawW, drawH, undefined, 'FAST');
 
         pdf.setDrawColor(210, 215, 222);
         pdf.setLineWidth(0.5);
@@ -1113,8 +1150,8 @@
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('./sw.js')
-          .then(() => console.log('Mekohm Scan prêt pour le mode hors-ligne'))
-          .catch((err) => console.error('Erreur Service Worker :', err));
+          .then(() => console.log('Mekohm Scan ready for offline mode'))
+          .catch((err) => console.error('Service Worker error:', err));
       });
     }
   </script>
