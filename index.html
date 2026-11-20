@@ -258,12 +258,13 @@
       renderPagesGrid();
     }
 
-    // --- TIMESTAMPED COPY BACKUP (METHOD A - iOS SHARE SHEET WITHOUT .TXT) ---
+    // --- TIMESTAMPED COPY BACKUP (FORMAT: yymmdd-hhmm) ---
     async function sauvegarderCopieHorodatee(donnee, extensionForcee = null) {
       const now = new Date();
       const pad = (n) => String(n).padStart(2, '0');
-      const horodatage = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
-
+      const yy = String(now.getFullYear()).slice(-2);
+      const horodatage = `${yy}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+      
       let blob = donnee;
       if (typeof donnee === 'string') {
         const res = await fetch(donnee);
