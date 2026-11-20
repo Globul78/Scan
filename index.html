@@ -41,8 +41,12 @@
     .view.active { display: flex; }
     .home-container { padding: 14px 16px; display: flex; flex-direction: column; gap: 14px; flex: 1; }
     .filename-box { background: var(--surface); padding: 12px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.08); }
-    .filename-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-    .filename-header label { font-size: 12px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; }
+    .filename-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; gap: 6px; }
+    .filename-header label { font-size: 12px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; flex: 1; }
+    .header-actions { display: flex; align-items: center; gap: 6px; }
+    .undo-btn { background: rgba(14, 165, 233, 0.15); color: #38bdf8; border: 1px solid rgba(14, 165, 233, 0.35); border-radius: 8px; padding: 4px 9px; font-size: 11px; font-weight: 700; cursor: pointer; }
+    .undo-btn:active { transform: scale(0.96); }
+    .undo-btn:disabled { opacity: 0.35; pointer-events: none; }
     .clear-week-btn { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 4px 9px; font-size: 11px; font-weight: 700; cursor: pointer; }
     .clear-week-btn:disabled { opacity: 0.35; pointer-events: none; }
     .filename-input-wrap { display: flex; align-items: center; background: var(--bg); border-radius: 10px; padding: 0 10px; border: 1px solid var(--surface-light); }
@@ -110,7 +114,10 @@
         <div class="filename-box">
           <div class="filename-header">
             <label for="pdfName" id="weekLabel">Current Week (Ends Sunday)</label>
-            <button id="clearWeekBtn" class="clear-week-btn" onclick="confirmClearWeek()" disabled>🗑️ Clear Week</button>
+            <div class="header-actions">
+              <button id="undoBtn" class="undo-btn" onclick="undoLastAction()" disabled>↩ Undo (0)</button>
+              <button id="clearWeekBtn" class="clear-week-btn" onclick="confirmClearWeek()" disabled>🗑️ Clear</button>
+            </div>
           </div>
           <div class="filename-input-wrap">
             <input type="text" id="pdfName" autocomplete="off" />
@@ -184,6 +191,8 @@
 
     let cvReady = false;
     let scannedPages = [];
+    let undoStack = []; // Jusqu'à 5 états précédents par semaine
+    const MAX_UNDO = 5;
     let originalImage = null;
     let corners = [];
     let activeCornerIndex = -1;
@@ -199,7 +208,57 @@
       el.classList.toggle('active', visible);
     }
 
-    // --- TIMESTAMPED COPY BACKUP (METHOD A - iOS SHARE SHEET) ---
+    // --- UNDO HISTORY (UP TO 5 STEPS) ---
+    function pushUndoSnapshot() {
+      const snapshot = {
+        weekKey: getActiveWeekKey(),
+        pages: scannedPages.map(p => ({ ...p }))
+      };
+      undoStack.push(snapshot);
+      if (undoStack.length > MAX_UNDO) {
+        undoStack.shift();
+      }
+      updateUndoButton();
+    }
+
+    function updateUndoButton() {
+      const btn = document.getElementById('undoBtn');
+      if (!btn) return;
+      btn.disabled = undoStack.length === 0;
+      btn.textContent = `↩ Undo (${undoStack.length})`;
+    }
+
+    async function undoLastAction() {
+      if (undoStack.length === 0) return;
+      const lastState = undoStack.pop();
+      updateUndoButton();
+
+      // Si l'action annulée concernait une autre semaine, on y retourne automatiquement
+      if (lastState.weekKey !== getActiveWeekKey()) {
+        const targetWeekStr = lastState.weekKey;
+        const [mm, dd, yyyy] = targetWeekStr.split('-').map(Number);
+        const targetSunday = new Date(yyyy, mm - 1, dd);
+        const currentSunday = getSundayDateForOffset(0);
+        weekOffset = Math.round((targetSunday - currentSunday) / (7 * 24 * 60 * 60 * 1000));
+        updateWeekUI();
+      }
+
+      // Remplacer les entrées de cette semaine dans IndexedDB par la sauvegarde
+      await clearCurrentWeekFromDB();
+      const restoredPages = [];
+      for (let i = 0; i < lastState.pages.length; i++) {
+        const copy = { ...lastState.pages[i], order: i };
+        delete copy.id; // Laisser IndexedDB attribuer un nouvel ID propre
+        const newId = await addScanToDB(copy);
+        copy.id = newId;
+        restoredPages.push(copy);
+      }
+
+      scannedPages = restoredPages;
+      renderPagesGrid();
+    }
+
+    // --- TIMESTAMPED COPY BACKUP (METHOD A - iOS SHARE SHEET WITHOUT .TXT) ---
     async function sauvegarderCopieHorodatee(donnee, extensionForcee = null) {
       const now = new Date();
       const pad = (n) => String(n).padStart(2, '0');
@@ -222,7 +281,7 @@
         try {
           await navigator.share({
             files: [file]
-            });
+          });
           return;
         } catch (err) {
           console.log('Partage annulé');
@@ -419,6 +478,8 @@
         const arrayBuffer = await file.arrayBuffer();
         const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
         const totalPages = pdfDoc.numPages;
+
+        pushUndoSnapshot();
 
         const now = new Date();
         const dateStr = now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + ' ' +
@@ -619,7 +680,6 @@
         const morphKernel = cv.Mat.ones(7, 7, cv.CV_8U);
         let bestOverall = { pts: null, score: 0 };
 
-        // Pass 1: Canny edge detection + morphological closing
         const edged1 = new cv.Mat();
         cv.Canny(blurred, edged1, 40, 130);
         cv.morphologyEx(edged1, edged1, cv.MORPH_CLOSE, morphKernel);
@@ -628,7 +688,6 @@
         if (res1.score > bestOverall.score) bestOverall = res1;
         edged1.delete();
 
-        // Pass 2: Adaptive threshold (white paper on wood/countertop)
         if (!bestOverall.pts) {
           const thresh = new cv.Mat();
           cv.adaptiveThreshold(blurred, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, -4);
@@ -638,7 +697,6 @@
           thresh.delete();
         }
 
-        // Pass 3: Otsu threshold (high contrast)
         if (!bestOverall.pts) {
           const otsu = new cv.Mat();
           cv.threshold(blurred, otsu, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
@@ -772,6 +830,8 @@
       const dateStr = now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + ' ' +
                       now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 
+      pushUndoSnapshot();
+
       const imageDataUrl = resCanvas.toDataURL('image/jpeg', 0.68);
 
       const newScan = {
@@ -790,13 +850,14 @@
       renderPagesGrid();
       showView('viewHome');
 
-      // Sauvegarde automatique horodatée via le menu Partager iOS
+      // Sauvegarde automatique horodatée via le menu Partager iOS (sans fichier .txt)
       await sauvegarderCopieHorodatee(imageDataUrl, 'jpg');
     }
 
     async function movePage(index, direction) {
       const targetIndex = index + direction;
       if (targetIndex < 0 || targetIndex >= scannedPages.length) return;
+      pushUndoSnapshot();
       const temp = scannedPages[index];
       scannedPages[index] = scannedPages[targetIndex];
       scannedPages[targetIndex] = temp;
@@ -807,6 +868,13 @@
     async function deletePage(index) {
       const item = scannedPages[index];
       if (!item) return;
+
+      const labelInfo = item.timestamp ? ` (${item.timestamp})` : '';
+      if (!confirm(`Êtes-vous certain de vouloir effacer la facture #${index + 1}${labelInfo} ?`)) {
+        return;
+      }
+
+      pushUndoSnapshot();
       await deleteScanFromDB(item.id);
       scannedPages.splice(index, 1);
       await updateAllScansOrderInDB();
@@ -816,6 +884,7 @@
     async function confirmClearWeek() {
       if (scannedPages.length === 0) return;
       if (confirm(`Delete all ${scannedPages.length} invoices from this week (${getActiveWeekKey()})?`)) {
+        pushUndoSnapshot();
         await clearCurrentWeekFromDB();
         scannedPages = [];
         renderPagesGrid();
@@ -830,6 +899,7 @@
       document.getElementById('pageCount').textContent = scannedPages.length;
       exportBtn.disabled = scannedPages.length === 0;
       clearBtn.disabled = scannedPages.length === 0;
+      updateUndoButton();
 
       if (scannedPages.length === 0) {
         grid.innerHTML = `
@@ -864,7 +934,6 @@
       if (scannedPages.length === 0) return;
       const { jsPDF } = window.jspdf;
 
-      // Exact 11 x 8.5 inches Landscape in points (792 x 612 pt)
       const pageW = 792;
       const pageH = 612;
       const margin = 24;
