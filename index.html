@@ -8,7 +8,8 @@
   <meta name="apple-mobile-web-app-title" content="Mekohm Scan" />
   <meta name="theme-color" content="#0f172a" />
   <title>Mekohm Scan — Weekly Invoices</title>
-  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%230f172a'/%3E%3Crect x='36' y='28' width='108' height='124' rx='12' fill='%231e293b' stroke='%2338bdf8' stroke-width='6'/%3E%3Cpath d='M56 64h68M56 90h68M56 116h44' stroke='%23f8fafc' stroke-width='8' stroke-linecap='round'/%3E%3Ccircle cx='134' cy='134' r='26' fill='%230284c7'/%3E%3Cpath d='M124 134l7 7 14-14' stroke='%23ffffff' stroke-width='6' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E" />
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="apple-touch-icon" href="./icon-192.png" />
 
   <!-- Libraries: jsPDF, PDF.js, OpenCV.js -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -87,11 +88,6 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     input[type="file"] { display: none; }
   </style>
-  <link rel="manifest" href="./manifest.json">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Mekohm Scan">
-<link rel="apple-touch-icon" href="./icon-192.png">
 </head>
 <body>
 
@@ -201,6 +197,47 @@
       const el = document.getElementById('loaderOverlay');
       document.getElementById('loaderText').textContent = text;
       el.classList.toggle('active', visible);
+    }
+
+    // --- TIMESTAMPED COPY BACKUP (METHOD A - iOS SHARE SHEET) ---
+    async function sauvegarderCopieHorodatee(donnee, extensionForcee = null) {
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const horodatage = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+
+      let blob = donnee;
+      if (typeof donnee === 'string') {
+        const res = await fetch(donnee);
+        blob = await res.blob();
+      }
+
+      const estPdf = extensionForcee === 'pdf' || blob.type === 'application/pdf';
+      const ext = estPdf ? 'pdf' : 'jpg';
+      const mimeType = estPdf ? 'application/pdf' : 'image/jpeg';
+      const fileName = `${horodatage}.${ext}`;
+
+      const file = new File([blob], fileName, { type: mimeType });
+
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: fileName
+          });
+          return;
+        } catch (err) {
+          console.log('Partage annulé');
+          return;
+        }
+      }
+
+      // Fallback sur PC : téléchargement direct
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      a.click();
+      URL.revokeObjectURL(url);
     }
 
     // --- WEEK CALCULATION (Week ends on Sunday) ---
@@ -421,10 +458,11 @@
         }
 
         renderPagesGrid();
+        setLoader(false);
+        await sauvegarderCopieHorodatee(file, 'pdf');
       } catch (err) {
         console.error(err);
         alert('Unable to read this PDF file (it may be password-protected).');
-      } finally {
         setLoader(false);
       }
     }
@@ -735,9 +773,11 @@
       const dateStr = now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + ' ' +
                       now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 
+      const imageDataUrl = resCanvas.toDataURL('image/jpeg', 0.68);
+
       const newScan = {
         weekKey: getActiveWeekKey(),
-        dataUrl: resCanvas.toDataURL('image/jpeg', 0.68),
+        dataUrl: imageDataUrl,
         width: resCanvas.width,
         height: resCanvas.height,
         timestamp: dateStr,
@@ -750,6 +790,9 @@
       scannedPages.push(newScan);
       renderPagesGrid();
       showView('viewHome');
+
+      // Sauvegarde automatique horodatée via le menu Partager iOS
+      await sauvegarderCopieHorodatee(imageDataUrl, 'jpg');
     }
 
     async function movePage(index, direction) {
@@ -847,11 +890,6 @@
       scannedPages.forEach((item, index) => {
         const aspect = item.width / Math.max(1, item.height);
 
-        // Column sizing for 11 x 8.5 Landscape:
-        // - Narrow thermal receipt (aspect < 0.58) -> 1/4 width (up to 4 side-by-side)
-        // - Medium receipt (aspect < 0.85) -> 1/3 width (up to 3 side-by-side)
-        // - Wide/square receipt (aspect < 1.25) -> 1/2 width (2 side-by-side)
-        // - Full invoice / imported PDF -> full width (or scaled to fit height)
         let targetW;
         if (!item.isFullPage && aspect < 0.58) {
           targetW = (usableW - colGap * 3) / 4;
@@ -866,7 +904,6 @@
         let drawW = targetW;
         let drawH = drawW / aspect;
 
-        // Clamp height so tall receipts or portrait pages fit cleanly on a single 11 x 8.5 page
         const maxSingleH = usableH - labelH;
         if (drawH > maxSingleH) {
           drawH = maxSingleH;
@@ -875,14 +912,12 @@
 
         const totalBlockH = drawH + labelH;
 
-        // Wrap to next row if it doesn't fit horizontally (preserves strict chronological order)
         if (cursorX > margin && (cursorX + drawW > pageW - margin + 1)) {
           cursorX = margin;
           cursorY += currentRowMaxH + rowGap;
           currentRowMaxH = 0;
         }
 
-        // Start a new 11 x 8.5 landscape page if row doesn't fit vertically
         if (cursorY > margin && (cursorY + totalBlockH > pageH - margin + 1)) {
           pdf.addPage([pageW, pageH], 'l');
           cursorX = margin;
@@ -890,21 +925,17 @@
           currentRowMaxH = 0;
         }
 
-        // Chronological index label (#1, #2...)
         pdf.setFont('helvetica', 'bold');
         pdf.setFontSize(8);
         pdf.setTextColor(100, 116, 139);
         pdf.text(`#${index + 1}`, cursorX, cursorY + 8);
 
-        // Receipt image
         pdf.addImage(item.dataUrl, 'JPEG', cursorX, cursorY + labelH, drawW, drawH, undefined, 'MEDIUM');
 
-        // Subtle border around receipt
         pdf.setDrawColor(210, 215, 222);
         pdf.setLineWidth(0.5);
         pdf.rect(cursorX, cursorY + labelH, drawW, drawH);
 
-        // Advance cursor horizontally
         cursorX += drawW + colGap;
         if (totalBlockH > currentRowMaxH) {
           currentRowMaxH = totalBlockH;
@@ -927,13 +958,13 @@
     }
   </script>
   <script>
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js')
-        .then(() => console.log('Mekohm Scan prêt pour le mode hors-ligne'))
-        .catch((err) => console.error('Erreur Service Worker :', err));
-    });
-  }
-</script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+          .then(() => console.log('Mekohm Scan prêt pour le mode hors-ligne'))
+          .catch((err) => console.error('Erreur Service Worker :', err));
+      });
+    }
+  </script>
 </body>
 </html>
