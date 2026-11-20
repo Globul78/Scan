@@ -221,9 +221,8 @@
       if (navigator.canShare && navigator.canShare({ files: [file] })) {
         try {
           await navigator.share({
-            files: [file],
-            title: fileName
-          });
+            files: [file]
+            });
           return;
         } catch (err) {
           console.log('Partage annulé');
