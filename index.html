@@ -947,7 +947,7 @@
 
       if (navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
         try {
-          await navigator.share({ files: [pdfFile], title: fileName });
+          await navigator.share({ files: [pdfFile] });
           return;
         } catch (err) {
           if (err.name === 'AbortError') return;
