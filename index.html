@@ -87,6 +87,11 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     input[type="file"] { display: none; }
   </style>
+  <link rel="manifest" href="./manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Mekohm Scan">
+<link rel="apple-touch-icon" href="./icon-192.png">
 </head>
 <body>
 
@@ -921,5 +926,14 @@
       pdf.save(fileName);
     }
   </script>
+  <script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js')
+        .then(() => console.log('Mekohm Scan prêt pour le mode hors-ligne'))
+        .catch((err) => console.error('Erreur Service Worker :', err));
+    });
+  }
+</script>
 </body>
 </html>
