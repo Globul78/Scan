@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mekohm-scan-v9';
+const CACHE_NAME = 'mekohm-scan-v10';
 
 // Fichiers essentiels à sauvegarder dans la mémoire de l'iPhone
 const ASSETS_TO_CACHE = [
