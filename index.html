@@ -141,7 +141,7 @@
     .preview-body img.zoomed {
       max-width: none;
       max-height: none;
-      width: 180%;
+      width: 220%;
       cursor: zoom-out;
     }
   </style>
@@ -274,7 +274,7 @@
       el.classList.toggle('active', visible);
     }
 
-    // --- ADAPTIVE IMAGE COMPRESSION (TARGET MAX ~400 KB) ---
+    // --- ADAPTIVE IMAGE COMPRESSION (TARGET MAX ~400 KB PER PAGE) ---
     function encodeCanvasUnderMaxKB(canvas, maxKB = 400, initialQuality = 0.88) {
       let quality = initialQuality;
       let dataUrl = canvas.toDataURL('image/jpeg', quality);
@@ -546,7 +546,7 @@
       }
     }
 
-    // High-resolution PDF import (max 400 KB/page, multi-page grouped side-by-side)
+    // --- MERGE ALL PAGES OF AN IMPORTED PDF SIDE-BY-SIDE INTO A SINGLE ITEM ---
     async function importExternalPDF(file) {
       if (!window.pdfjsLib) {
         alert('PDF reader is still loading, please try again in 2 seconds.');
@@ -565,43 +565,69 @@
         const dateStr = now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + ' ' +
                         now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 
-        const activeKey = getActiveWeekKey();
-        const docGroupId = `pdf_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const renderedCanvases = [];
+        const renderScale = totalPages > 1 ? 1.5 : 1.75;
 
         for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-          setLoader(true, `Importing page ${pageNum} / ${totalPages}...`);
+          setLoader(true, `Rendering page ${pageNum} / ${totalPages}...`);
           const page = await pdfDoc.getPage(pageNum);
-          const viewport = page.getViewport({ scale: 1.75 });
+          const viewport = page.getViewport({ scale: renderScale });
 
-          const canvas = document.createElement('canvas');
-          canvas.width = Math.round(viewport.width);
-          canvas.height = Math.round(viewport.height);
-          const ctx = canvas.getContext('2d');
+          const pageCanvas = document.createElement('canvas');
+          pageCanvas.width = Math.round(viewport.width);
+          pageCanvas.height = Math.round(viewport.height);
+          const ctx = pageCanvas.getContext('2d');
 
           ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
 
           await page.render({ canvasContext: ctx, viewport: viewport }).promise;
-
-          const pageLabel = totalPages > 1 ? `PDF (${pageNum}/${totalPages}) • ${dateStr}` : `PDF • ${dateStr}`;
-
-          const newScan = {
-            weekKey: activeKey,
-            dataUrl: encodeCanvasUnderMaxKB(canvas, 400, 0.88),
-            width: canvas.width,
-            height: canvas.height,
-            timestamp: pageLabel,
-            isFullPage: true,
-            docGroupId: totalPages > 1 ? docGroupId : null,
-            docPageIndex: pageNum,
-            docTotalPages: totalPages,
-            order: scannedPages.length
-          };
-
-          const id = await addScanToDB(newScan);
-          newScan.id = id;
-          scannedPages.push(newScan);
+          renderedCanvases.push(pageCanvas);
         }
+
+        // Stitch all pages horizontally side-by-side onto one single canvas
+        const gapPx = totalPages > 1 ? 16 : 0;
+        const totalWidth = renderedCanvases.reduce((sum, c) => sum + c.width, 0) + gapPx * (totalPages - 1);
+        const maxHeight = renderedCanvases.reduce((max, c) => Math.max(max, c.height), 0);
+
+        const mergedCanvas = document.createElement('canvas');
+        mergedCanvas.width = totalWidth;
+        mergedCanvas.height = maxHeight;
+        const mCtx = mergedCanvas.getContext('2d');
+
+        mCtx.fillStyle = '#e2e8f0';
+        mCtx.fillRect(0, 0, totalWidth, maxHeight);
+
+        let drawX = 0;
+        renderedCanvases.forEach((c, idx) => {
+          mCtx.drawImage(c, drawX, 0);
+          if (idx < renderedCanvases.length - 1) {
+            mCtx.strokeStyle = '#94a3b8';
+            mCtx.lineWidth = 3;
+            mCtx.beginPath();
+            mCtx.moveTo(drawX + c.width + gapPx / 2, 0);
+            mCtx.lineTo(drawX + c.width + gapPx / 2, maxHeight);
+            mCtx.stroke();
+          }
+          drawX += c.width + gapPx;
+        });
+
+        const pageLabel = totalPages > 1 ? `PDF (${totalPages} pages) • ${dateStr}` : `PDF • ${dateStr}`;
+        const maxBudgetKB = Math.min(400 * totalPages, 1200);
+
+        const newScan = {
+          weekKey: getActiveWeekKey(),
+          dataUrl: encodeCanvasUnderMaxKB(mergedCanvas, maxBudgetKB, 0.88),
+          width: mergedCanvas.width,
+          height: mergedCanvas.height,
+          timestamp: pageLabel,
+          isFullPage: true,
+          order: scannedPages.length
+        };
+
+        const id = await addScanToDB(newScan);
+        newScan.id = id;
+        scannedPages.push(newScan);
 
         renderPagesGrid();
         setLoader(false);
@@ -778,382 +804,4 @@
           const thresh = new cv.Mat();
           cv.adaptiveThreshold(blurred, thresh, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, -4);
           cv.morphologyEx(thresh, thresh, cv.MORPH_CLOSE, morphKernel);
-          const res2 = findBestQuadFromBinary(thresh, dsize.width, dsize.height, scale);
-          if (res2.score > bestOverall.score) bestOverall = res2;
-          thresh.delete();
-        }
-
-        if (!bestOverall.pts) {
-          const otsu = new cv.Mat();
-          cv.threshold(blurred, otsu, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-          cv.morphologyEx(otsu, otsu, cv.MORPH_CLOSE, morphKernel);
-          const res3 = findBestQuadFromBinary(otsu, dsize.width, dsize.height, scale);
-          if (res3.score > bestOverall.score) bestOverall = res3;
-          otsu.delete();
-        }
-
-        if (bestOverall.pts) {
-          corners = expandCornersSlightly(bestOverall.pts, w, h, 0.015);
-        } else {
-          corners = defaultCorners;
-        }
-
-        src.delete(); proc.delete(); gray.delete(); blurred.delete(); morphKernel.delete();
-      } catch (err) {
-        console.warn('Auto-detect fallback:', err);
-        corners = defaultCorners;
-      }
-    }
-
-    function orderCorners(pts) {
-      const sortedBySum = [...pts].sort((a, b) => (a.x + a.y) - (b.x + b.y));
-      const tl = sortedBySum[0], br = sortedBySum[3], rem = [sortedBySum[1], sortedBySum[2]];
-      return [tl, rem[0].x > rem[1].x ? rem[0] : rem[1], br, rem[0].x > rem[1].x ? rem[1] : rem[0]];
-    }
-
-    function drawCropCanvas() {
-      const workspace = document.getElementById('cropWorkspace'), canvas = document.getElementById('cropCanvas'), ctx = canvas.getContext('2d');
-      displayScale = Math.min((workspace.clientWidth - 24) / originalImage.width, (workspace.clientHeight - 24) / originalImage.height);
-      canvas.width = Math.round(originalImage.width * displayScale);
-      canvas.height = Math.round(originalImage.height * displayScale);
-      ctx.drawImage(originalImage, 0, 0, canvas.width, canvas.height);
-      ctx.save(); ctx.fillStyle = 'rgba(0, 0, 0, 0.55)'; ctx.beginPath(); ctx.rect(0, 0, canvas.width, canvas.height);
-      ctx.moveTo(corners[0].x * displayScale, corners[0].y * displayScale);
-      for (let i = 3; i >= 0; i--) ctx.lineTo(corners[i].x * displayScale, corners[i].y * displayScale);
-      ctx.closePath(); ctx.fill('evenodd'); ctx.restore();
-      ctx.strokeStyle = '#0ea5e9'; ctx.lineWidth = 3; ctx.beginPath();
-      corners.forEach((pt, idx) => { const x = pt.x * displayScale, y = pt.y * displayScale; idx === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
-      ctx.closePath(); ctx.stroke();
-      corners.forEach((pt, idx) => {
-        ctx.beginPath(); ctx.arc(pt.x * displayScale, pt.y * displayScale, idx === activeCornerIndex ? 16 : 12, 0, Math.PI * 2);
-        ctx.fillStyle = idx === activeCornerIndex ? '#38bdf8' : '#0ea5e9'; ctx.fill();
-        ctx.lineWidth = 3; ctx.strokeStyle = '#ffffff'; ctx.stroke();
-      });
-    }
-
-    const cropCanvas = document.getElementById('cropCanvas'), magnifier = document.getElementById('magnifier');
-    function getPointerPos(e) {
-      const rect = cropCanvas.getBoundingClientRect();
-      return { x: ((e.touches ? e.touches[0].clientX : e.clientX) - rect.left) / displayScale, y: ((e.touches ? e.touches[0].clientY : e.clientY) - rect.top) / displayScale };
-    }
-    function onPointerDown(e) {
-      e.preventDefault(); const pos = getPointerPos(e); let minDist = 60 / displayScale; activeCornerIndex = -1;
-      corners.forEach((pt, idx) => { const dist = Math.hypot(pt.x - pos.x, pt.y - pos.y); if (dist < minDist) { minDist = dist; activeCornerIndex = idx; } });
-      if (activeCornerIndex !== -1) { updateMagnifier(corners[activeCornerIndex]); drawCropCanvas(); }
-    }
-    function onPointerMove(e) {
-      if (activeCornerIndex === -1) return; e.preventDefault(); const pos = getPointerPos(e);
-      corners[activeCornerIndex] = { x: Math.max(0, Math.min(originalImage.width, Math.round(pos.x))), y: Math.max(0, Math.min(originalImage.height, Math.round(pos.y))) };
-      updateMagnifier(corners[activeCornerIndex]); drawCropCanvas();
-    }
-    function onPointerUp() { activeCornerIndex = -1; magnifier.style.display = 'none'; drawCropCanvas(); }
-    function updateMagnifier(pt) {
-      magnifier.style.display = 'block'; const mCtx = magnifier.getContext('2d'), size = 110 / 1.6;
-      mCtx.clearRect(0, 0, 110, 110); mCtx.drawImage(originalImage, pt.x - size / 2, pt.y - size / 2, size, size, 0, 0, 110, 110);
-      mCtx.strokeStyle = '#0ea5e9'; mCtx.lineWidth = 2; mCtx.beginPath(); mCtx.moveTo(55, 42); mCtx.lineTo(55, 68); mCtx.moveTo(42, 55); mCtx.lineTo(68, 55); mCtx.stroke();
-    }
-    cropCanvas.addEventListener('touchstart', onPointerDown, { passive: false });
-    cropCanvas.addEventListener('touchmove', onPointerMove, { passive: false });
-    cropCanvas.addEventListener('touchend', onPointerUp);
-    cropCanvas.addEventListener('mousedown', onPointerDown);
-    window.addEventListener('mousemove', onPointerMove);
-    window.addEventListener('mouseup', onPointerUp);
-
-    function applyPerspectiveWarp() {
-      const [tl, tr, br, bl] = corners;
-      const targetW = Math.round(Math.max(Math.hypot(tr.x - tl.x, tr.y - tl.y), Math.hypot(br.x - bl.x, br.y - bl.y)));
-      const targetH = Math.round(Math.max(Math.hypot(bl.x - tl.x, bl.y - tl.y), Math.hypot(br.x - tr.x, br.y - tr.y)));
-      warpedCanvas.width = targetW; warpedCanvas.height = targetH;
-      if (cvReady) {
-        const src = cv.imread(originalImage), dst = new cv.Mat();
-        const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y]);
-        const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, targetW, 0, targetW, targetH, 0, targetH]);
-        const M = cv.getPerspectiveTransform(srcTri, dstTri);
-        cv.warpPerspective(src, dst, M, new cv.Size(targetW, targetH), cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
-        cv.imshow(warpedCanvas, dst);
-        src.delete(); dst.delete(); srcTri.delete(); dstTri.delete(); M.delete();
-      } else {
-        warpedCanvas.getContext('2d').drawImage(originalImage, Math.min(tl.x, bl.x), Math.min(tl.y, tr.y), targetW, targetH, 0, 0, targetW, targetH);
-      }
-      setFilter(currentFilter); showView('viewFilter');
-    }
-
-    function setFilter(type) {
-      currentFilter = type;
-      document.querySelectorAll('.filter-pill').forEach(el => el.classList.toggle('active', el.dataset.filter === type));
-      const resCanvas = document.getElementById('resultCanvas');
-      resCanvas.width = warpedCanvas.width; resCanvas.height = warpedCanvas.height;
-      const ctx = resCanvas.getContext('2d'); ctx.drawImage(warpedCanvas, 0, 0);
-      if (type === 'orig') return;
-      const imgData = ctx.getImageData(0, 0, resCanvas.width, resCanvas.height), data = imgData.data;
-      if (type === 'bw') {
-        for (let i = 0; i < data.length; i += 4) {
-          const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-          let val = (lum - 128) * 1.85 + 145;
-          val = val > 210 ? 255 : (val < 45 ? 0 : val);
-          data[i] = data[i + 1] = data[i + 2] = val;
-        }
-      } else if (type === 'magic') {
-        for (let i = 0; i < data.length; i += 4) {
-          for (let c = 0; c < 3; c++) data[i + c] = Math.max(0, Math.min(255, (data[i + c] - 128) * 1.45 + 140));
-        }
-      }
-      ctx.putImageData(imgData, 0, 0);
-    }
-
-    function rotateResult() {
-      const temp = document.createElement('canvas');
-      temp.width = warpedCanvas.height; temp.height = warpedCanvas.width;
-      const tCtx = temp.getContext('2d');
-      tCtx.translate(temp.width / 2, temp.height / 2); tCtx.rotate(Math.PI / 2);
-      tCtx.drawImage(warpedCanvas, -warpedCanvas.width / 2, -warpedCanvas.height / 2);
-      warpedCanvas = temp; setFilter(currentFilter);
-    }
-
-    async function saveCurrentPage() {
-      const resCanvas = document.getElementById('resultCanvas');
-      const now = new Date();
-      const dateStr = now.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + ' ' +
-                      now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-
-      pushUndoSnapshot();
-
-      const imageDataUrl = encodeCanvasUnderMaxKB(resCanvas, 400, 0.88);
-
-      const newScan = {
-        weekKey: getActiveWeekKey(),
-        dataUrl: imageDataUrl,
-        width: resCanvas.width,
-        height: resCanvas.height,
-        timestamp: dateStr,
-        isFullPage: false,
-        order: scannedPages.length
-      };
-
-      const id = await addScanToDB(newScan);
-      newScan.id = id;
-      scannedPages.push(newScan);
-      renderPagesGrid();
-      showView('viewHome');
-
-      // Automatic timestamped backup via iOS Share Sheet
-      await saveTimestampedCopy(imageDataUrl, 'jpg');
-    }
-
-    async function movePage(index, direction) {
-      const targetIndex = index + direction;
-      if (targetIndex < 0 || targetIndex >= scannedPages.length) return;
-      pushUndoSnapshot();
-      const temp = scannedPages[index];
-      scannedPages[index] = scannedPages[targetIndex];
-      scannedPages[targetIndex] = temp;
-      renderPagesGrid();
-      await updateAllScansOrderInDB();
-    }
-
-    async function deletePage(index) {
-      const item = scannedPages[index];
-      if (!item) return;
-
-      const labelInfo = item.timestamp ? ` (${item.timestamp})` : '';
-      if (!confirm(`Are you sure you want to delete invoice #${index + 1}${labelInfo}?`)) {
-        return;
-      }
-
-      pushUndoSnapshot();
-      await deleteScanFromDB(item.id);
-      scannedPages.splice(index, 1);
-      await updateAllScansOrderInDB();
-      renderPagesGrid();
-    }
-
-    async function confirmClearWeek() {
-      if (scannedPages.length === 0) return;
-      if (confirm(`Delete all ${scannedPages.length} invoices from this week (${getActiveWeekKey()})?`)) {
-        pushUndoSnapshot();
-        await clearCurrentWeekFromDB();
-        scannedPages = [];
-        renderPagesGrid();
-      }
-    }
-
-    function renderPagesGrid() {
-      const grid = document.getElementById('pagesGrid');
-      const exportBtn = document.getElementById('exportBtn');
-      const clearBtn = document.getElementById('clearWeekBtn');
-
-      document.getElementById('pageCount').textContent = scannedPages.length;
-      exportBtn.disabled = scannedPages.length === 0;
-      clearBtn.disabled = scannedPages.length === 0;
-      updateUndoButton();
-
-      if (scannedPages.length === 0) {
-        grid.innerHTML = `
-          <div class="empty-state">
-            <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="1.8">
-              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-              <circle cx="12" cy="13" r="4"></circle>
-            </svg>
-            <p>No invoices saved for this week.<br>Tap <strong>Photo</strong> to scan a receipt or <strong>Import</strong> to add an external PDF or image.</p>
-          </div>`;
-        return;
-      }
-
-      grid.innerHTML = scannedPages.map((p, idx) => `
-        <div class="page-card">
-          <div class="page-thumb" onclick="openPreviewModal(${idx})">
-            <img src="${p.dataUrl}" alt="Page ${idx + 1}" />
-            <div class="page-badge">#${idx + 1}</div>
-            <button class="delete-page" onclick="event.stopPropagation(); deletePage(${idx})">×</button>
-            <div class="page-date">${p.timestamp || ''}</div>
-          </div>
-          <div class="card-controls">
-            <button class="move-btn" onclick="movePage(${idx}, -1)" ${idx === 0 ? 'disabled' : ''}>◀</button>
-            <button class="move-btn" onclick="movePage(${idx}, 1)" ${idx === scannedPages.length - 1 ? 'disabled' : ''}>▶</button>
-          </div>
-        </div>
-      `).join('');
-    }
-
-    // --- FULLSCREEN PREVIEW VIEWER ---
-    function openPreviewModal(index) {
-      const item = scannedPages[index];
-      if (!item) return;
-      const img = document.getElementById('previewImage');
-      img.classList.remove('zoomed');
-      img.src = item.dataUrl;
-      document.getElementById('previewTitle').textContent = `#${index + 1} • ${item.timestamp || ''}`;
-      document.getElementById('previewModal').classList.add('active');
-    }
-
-    function togglePreviewZoom() {
-      document.getElementById('previewImage').classList.toggle('zoomed');
-    }
-
-    function closePreviewModal() {
-      document.getElementById('previewModal').classList.remove('active');
-    }
-
-    // --- CHRONOLOGICAL MULTI-COLUMN PDF PACKING (11 x 8.5 in LANDSCAPE) ---
-    async function exportPDF() {
-      if (scannedPages.length === 0) return;
-      const { jsPDF } = window.jspdf;
-
-      const pageW = 792;
-      const pageH = 612;
-      const margin = 24;
-      const colGap = 12;
-      const rowGap = 14;
-      const labelH = 11;
-
-      const usableW = pageW - margin * 2;
-      const usableH = pageH - margin * 2;
-
-      const pdf = new jsPDF({
-        orientation: 'l',
-        unit: 'pt',
-        format: [pageW, pageH],
-        compress: true
-      });
-
-      let cursorX = margin;
-      let cursorY = margin;
-      let currentRowMaxH = 0;
-
-      // Count contiguous pages belonging to the same multi-page invoice
-      const groupSizes = {};
-      scannedPages.forEach((item) => {
-        if (item.docGroupId) {
-          groupSizes[item.docGroupId] = (groupSizes[item.docGroupId] || 0) + 1;
-        }
-      });
-
-      scannedPages.forEach((item, index) => {
-        const aspect = item.width / Math.max(1, item.height);
-        const multiPageCount = item.docGroupId ? groupSizes[item.docGroupId] : 1;
-
-        let targetW;
-        if (multiPageCount >= 2) {
-          // Place all pages of a multi-page invoice side-by-side on the same row
-          const cols = Math.min(multiPageCount, 4);
-          targetW = (usableW - colGap * (cols - 1)) / cols;
-        } else if (!item.isFullPage && aspect < 0.58) {
-          targetW = (usableW - colGap * 3) / 4;
-        } else if (!item.isFullPage && aspect < 0.85) {
-          targetW = (usableW - colGap * 2) / 3;
-        } else if (!item.isFullPage && aspect < 1.25) {
-          targetW = (usableW - colGap) / 2;
-        } else {
-          targetW = usableW;
-        }
-
-        let drawW = targetW;
-        let drawH = drawW / aspect;
-
-        const maxSingleH = usableH - labelH;
-        if (drawH > maxSingleH) {
-          drawH = maxSingleH;
-          drawW = drawH * aspect;
-        }
-
-        const totalBlockH = drawH + labelH;
-
-        if (cursorX > margin && (cursorX + drawW > pageW - margin + 1)) {
-          cursorX = margin;
-          cursorY += currentRowMaxH + rowGap;
-          currentRowMaxH = 0;
-        }
-
-        if (cursorY > margin && (cursorY + totalBlockH > pageH - margin + 1)) {
-          pdf.addPage([pageW, pageH], 'l');
-          cursorX = margin;
-          cursorY = margin;
-          currentRowMaxH = 0;
-        }
-
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(8);
-        pdf.setTextColor(100, 116, 139);
-        const pageTag = multiPageCount >= 2 && item.docPageIndex
-          ? `#${index + 1} (p.${item.docPageIndex}/${multiPageCount})`
-          : `#${index + 1}`;
-        pdf.text(pageTag, cursorX, cursorY + 8);
-
-        pdf.addImage(item.dataUrl, 'JPEG', cursorX, cursorY + labelH, drawW, drawH, undefined, 'FAST');
-
-        pdf.setDrawColor(210, 215, 222);
-        pdf.setLineWidth(0.5);
-        pdf.rect(cursorX, cursorY + labelH, drawW, drawH);
-
-        cursorX += drawW + colGap;
-        if (totalBlockH > currentRowMaxH) {
-          currentRowMaxH = totalBlockH;
-        }
-      });
-
-      const rawName = (document.getElementById('pdfName').value.trim() || `invoices_${getActiveWeekKey()}`).replace(/[^a-zA-Z0-9_\-]/g, '_');
-      const fileName = `${rawName}.pdf`;
-      const pdfFile = new File([pdf.output('blob')], fileName, { type: 'application/pdf' });
-
-      if (navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
-        try {
-          await navigator.share({ files: [pdfFile] });
-          return;
-        } catch (err) {
-          if (err.name === 'AbortError') return;
-        }
-      }
-      pdf.save(fileName);
-    }
-  </script>
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./sw.js')
-          .then(() => console.log('Mekohm Scan ready for offline mode'))
-          .catch((err) => console.error('Service Worker error:', err));
-      });
-    }
-  </script>
-</body>
-</html>
+          const res2 = findBestQuadFromBinary(thresh, dsize.width, dsize.height
